@@ -39,7 +39,7 @@ module EventOutput
   ! SOURCE
   !
   type, abstract, public :: EventOutputFile
-    integer, private :: iFile = 0  ! private file handle
+     integer, private :: iFile = 0  ! private file handle
   contains
     ! deferred type-bound procedures that need to be implemented in the derived classes
     procedure(open_ifc),       deferred :: open
@@ -67,12 +67,13 @@ module EventOutput
       import :: EventOutputFile
       class(EventOutputFile), intent(in) :: this
     end subroutine
-    subroutine write_EH_ifc(this, nParts, nEvent, wgt)
+    subroutine write_EH_ifc(this, nParts, nEvent, wgt, iFE)
       import :: EventOutputFile
       class(EventOutputFile) :: this
       integer, intent(in) :: nParts
       integer, intent(in) :: nEvent            ! number of current event
       real, intent(in), optional :: wgt
+      integer, intent(in), optional :: iFE
     end subroutine
     subroutine write_EF_ifc(this)
       import :: EventOutputFile
@@ -93,7 +94,8 @@ module EventOutput
   ! type LHOutputFile
   ! PURPOSE
   ! This is an extended type for event output in LesHouches format.
-  ! It is derived from the base type EventOutputFile and implements its interfaces.
+  ! It is derived from the base type EventOutputFile and implements its
+  ! interfaces.
   !
   ! For a description of the Les Houches format, please refer to:
   ! * http://arxiv.org/abs/hep-ph/0609017
@@ -119,7 +121,8 @@ module EventOutput
   ! type OscarOutputFile
   ! PURPOSE
   ! This is an extended type for event output in OSCAR 2013 format.
-  ! It is derived from the base type EventOutputFile and implements its interfaces.
+  ! It is derived from the base type EventOutputFile and implements its
+  ! interfaces.
   !
   ! For a description of the OSCAR 2013 format, see:
   ! * http://phy.duke.edu/~jeb65/oscar2013
@@ -127,12 +130,42 @@ module EventOutput
   ! SOURCE
   !
   type, extends(EventOutputFile), public :: OscarOutputFile
+     integer, private :: nEvent = 0   ! store the event number
+     integer, private :: iFE = 0      ! store the iFE value
   contains
     procedure :: open                 => Oscar_open
     procedure :: close                => Oscar_close
     procedure :: write_event_header   => Oscar_write_event_header
     procedure :: write_event_footer   => Oscar_write_event_footer
     procedure :: write_particle       => Oscar_write_particle
+  end type
+  !****************************************************************************
+
+  !****************************************************************************
+  !****t* EventOutput/OscarExtOutputFile
+  ! NAME
+  ! type OscarExtOutputFile
+  ! PURPOSE
+  ! This is an extended type for event output in OSCAR 2013 format.
+  ! It is derived from the base type EventOutputFile and implements its
+  ! interfaces.
+  !
+  ! For a description of the OSCAR 2013 format, see:
+  ! * http://phy.duke.edu/~jeb65/oscar2013
+  !
+  ! This is an extended version whith much more output columns
+  !
+  ! SOURCE
+  !
+  type, extends(EventOutputFile), public :: OscarExtOutputFile
+     integer, private :: nEvent = 0   ! store the event number
+     integer, private :: iFE = 0      ! store the iFE value
+   contains
+    procedure :: open                 => OscarExt_open
+    procedure :: close                => OscarExt_close
+    procedure :: write_event_header   => OscarExt_write_event_header
+    procedure :: write_event_footer   => OscarExt_write_event_footer
+    procedure :: write_particle       => OscarExt_write_particle
   end type
   !****************************************************************************
 
@@ -168,8 +201,6 @@ module EventOutput
   type, extends(EventOutputFile), public :: RootOutputFile
     real, private :: weight
   contains
-
-
     procedure :: open                 => Root_open
     procedure :: close                => Root_close
     procedure :: write_event_header   => Root_write_event_header
@@ -271,16 +302,17 @@ contains
   !****************************************************************************
   !****s* EventOutput/LH_write_event_header
   ! NAME
-  ! subroutine LH_write_event_header(this, nParts, nEvent, wgt)
+  ! subroutine LH_write_event_header(this, nParts, nEvent, wgt, iFE)
   ! PURPOSE
   ! Write the header for a Les-Houches event, including the number of particles
   ! and the event weight.
   !****************************************************************************
-  subroutine LH_write_event_header(this, nParts, nEvent, wgt)
+  subroutine LH_write_event_header(this, nParts, nEvent, wgt, iFE)
     class(LHOutputFile) :: this
     integer, intent(in) :: nParts            ! number of particles
     integer, intent(in) :: nEvent            ! number of current event
     real, intent(in), optional :: wgt        ! weight of event
+    integer, intent(in), optional :: iFE     ! firstFvent
 
     character(len=15), parameter :: f1 = '(1P,2I6,4E14.6)'
     integer, parameter :: IDPRUP = 0
@@ -314,7 +346,7 @@ contains
   !****************************************************************************
   !****s* EventOutput/LH_write_particle
   ! NAME
-  ! subroutine LH_write_particle (iFile, part)
+  ! subroutine LH_write_particle(iFile, part)
   ! PURPOSE
   ! Write a single particle in Les-Houches format.
   !****************************************************************************
@@ -364,7 +396,10 @@ contains
     use particlePointerListDefinition
     use EventInfo_HiLep, only: EventInfo_HiLep_Get
     use neutrinoProdInfo, only: NeutrinoProdInfo_Get
-    use inputGeneral, only: eventType
+    use inputGeneral, only: eventType, numEnsembles, num_runs_SameEnergy
+    use initNeutrino, only: process_ID, flavor_ID
+    use nucleusDefinition
+    use nucleus, only: getTarget
     use eventtypes, only: hiLepton, neutrino, heavyIon, hadron
     use initHeavyIon, only: b_HI => b
     use initHadron, only: b_had => b
@@ -374,6 +409,7 @@ contains
     class(LHOutputFile), intent(in) :: this
     integer, intent(in), optional :: iFE
     type(tParticleListNode), pointer, optional :: pNode
+    type(tNucleus), pointer :: targetNuc
 
     real :: weight,nu,Q2,eps,phiL
     integer :: evtType, chrg_nuc
@@ -448,7 +484,7 @@ contains
 
     if (nCall == 1) then
       ! open file for the first time
-      open(this%iFile, file=fName, status='new')
+      open(this%iFile, file=fName, status='unknown')
       ! write header
       write(this%iFile,'(A)') '#!OSCAR2013 particle_lists t x y z mass p0 px py pz pdg ID'
       write(this%iFile,'(A)') '# Units: fm fm fm fm GeV GeV GeV GeV GeV none none'
@@ -478,28 +514,32 @@ contains
   !****************************************************************************
   !****s* EventOutput/Oscar_write_event_header
   ! NAME
-  ! subroutine Oscar_write_event_header(this, nParts, nEvent, wgt)
+  ! subroutine Oscar_write_event_header(this, nParts, nEvent, wgt, iFE)
   ! PURPOSE
   ! Write the header for an OSCAR 2013 event, including the number of particles
   ! and the event weight.
   !****************************************************************************
-  subroutine Oscar_write_event_header(this, nParts, nEvent, wgt)
+  subroutine Oscar_write_event_header(this, nParts, nEvent, wgt, iFE)
     class(OscarOutputFile) :: this
     integer, intent(in) :: nParts            ! number of particles
     integer, intent(in) :: nEvent            ! number of current event
     real, intent(in), optional :: wgt        ! weight of event
+    integer, intent(in), optional :: iFE     ! firstFvent
 
-    character(len=20) :: f
+    character(*), parameter :: f1 = '("# event ",I9," out",I4," weight",E14.6)'
+    character(*), parameter :: f0 = '("# event ",I9," out",I4)'
+
+    this%nEvent = nEvent
+    this%iFE = -1
+    if (present(iFE)) this%iFE = iFE
 
     if (present(wgt)) then
-      f = '(A,I4,A,I4,A,E14.6)'
-      write(this%iFile,f) '# event ', nEvent, ' out ', nParts, ' weight', wgt
+       write(this%iFile,f1) this%nEvent, nParts, wgt
     else
-      f = '(A,I4,A,I4)'
-      write(this%iFile,f) '# event ', nEvent, ' out ', nParts
+       write(this%iFile,f0) this%nEvent, nParts
     end if
-  end subroutine
 
+  end subroutine
 
   !****************************************************************************
   !****s* EventOutput/Oscar_write_event_footer
@@ -509,18 +549,45 @@ contains
   ! Write the footer that closes an OSCAR 2013 event.
   !****************************************************************************
   subroutine Oscar_write_event_footer(this)
-    use inputGeneral, only: current_run_number
+    use inputGeneral, only: eventType
+    use eventtypes, only: heavyIon, hadron, LoPion, HiPion
     use initHeavyIon, only: b_HI => b
-    class(OscarOutputFile), intent(in) :: this
-    write(this%iFile,'(A,I4,A,F8.6)') '# event ', current_run_number, &
-                                      ' end 0 impact ', b_HI
-  end subroutine
+    use initHadron, only: b_had => b
+    use initPion, only: getImpact_Lo => getImpact
+    use initHiPion, only: getImpact_Hi => getImpact
 
+    class(OscarOutputFile), intent(in) :: this
+
+    character(*), parameter :: f1 = '("# event ",I9," end 0 impact",E14.6)'
+    character(*), parameter :: f0 = '("# event ",I9," end 0")'
+
+    select case (eventType)
+    case (heavyIon)
+       write(this%iFile,f1) this%nEvent, b_Hi
+    case (hadron)
+       write(this%iFile,f1) this%nEvent, b_had
+    case (LoPion)
+       if (this%iFE>0) then
+          write(this%iFile,f1) this%nEvent, getImpact_Lo(this%iFE)
+       else
+          write(this%iFile,f0) this%nEvent
+       end if
+    case (HiPion)
+       if (this%iFE>0) then
+          write(this%iFile,f1) this%nEvent, getImpact_Hi(this%iFE)
+       else
+          write(this%iFile,f0) this%nEvent
+       end if
+    case default
+       write(this%iFile,f0) this%nEvent
+    end select
+
+  end subroutine
 
   !****************************************************************************
   !****s* EventOutput/Oscar_write_particle
   ! NAME
-  ! subroutine Oscar_write_particle (iFile, part)
+  ! subroutine Oscar_write_particle(iFile, part)
   ! PURPOSE
   ! Write a single particle in OSCAR 2013 format.
   !****************************************************************************
@@ -537,6 +604,172 @@ contains
     PDGcode = KFfromBUU(part)
     write(this%iFile,f) part%lastCollisionTime, part%position(1:3), &
                         sqrts(part), part%momentum(0:3), PDGcode, part%number
+
+  end subroutine
+
+
+!******************************************************************************
+!******************************************************************************
+!******************************************************************************
+
+
+  !****************************************************************************
+  !****s* EventOutput/OscarExt_open
+  ! NAME
+  ! subroutine OscarExt_open(this, pert, nCall, nTimeStep)
+  ! PURPOSE
+  ! Open a file for event-information output according to the
+  ! "OSCAR 2013" standard.
+  !****************************************************************************
+  subroutine OscarExt_open(this, pert, nCall, nTimeStep)
+    class(OscarExtOutputFile) :: this
+    logical, intent(in) :: pert
+    integer, intent(in) :: nCall, nTimeStep
+
+    character(len=40) :: fName  ! file name
+    character(len=4)  :: buf
+
+    if (pert) then
+      buf = 'Pert'
+      this%iFile = 723
+    else
+      buf = 'Real'
+      this%iFile = 724
+    end if
+    fName = 'EventOutput.' // trim(buf) // '.oscar'
+
+    if (nCall == 1) then
+      ! open file for the first time
+      open(this%iFile, file=fName, status='unknown')
+      ! write header
+      write(this%iFile,'(A)') '#!OSCAR2013 particle_lists t x y z mass p0 px py pz pdg ID mass0 lastCollisionTime mother1 mother2 mother3 generation'
+      write(this%iFile,'(A)') '# Units: fm fm fm fm GeV GeV GeV GeV GeV none none GeV fm none none none none'
+      write(this%iFile,'(A)') '# File generated by GiBUU (https://gibuu.hepforge.org)'
+    else
+      ! append to exiting file
+      open(this%iFile, file=fName, status='old', position='append')
+    end if
+
+  end subroutine
+
+
+  !****************************************************************************
+  !****s* EventOutput/OscarExt_close
+  ! NAME
+  ! subroutine OscarExt_close(this)
+  ! PURPOSE
+  ! Close a file after outputting OSCAR 2013 event information.
+  !****************************************************************************
+  subroutine OscarExt_close(this)
+    class(OscarExtOutputFile), intent(in) :: this
+
+    close(this%iFile)
+  end subroutine
+
+
+  !****************************************************************************
+  !****s* EventOutput/OscarExt_write_event_header
+  ! NAME
+  ! subroutine OscarExt_write_event_header(this, nParts, nEvent, wgt, iFE)
+  ! PURPOSE
+  ! Write the header for an OSCAR 2013 event, including the number of particles
+  ! and the event weight.
+  !****************************************************************************
+  subroutine OscarExt_write_event_header(this, nParts, nEvent, wgt, iFE)
+    class(OscarExtOutputFile) :: this
+    integer, intent(in) :: nParts            ! number of particles
+    integer, intent(in) :: nEvent            ! number of current event
+    real, intent(in), optional :: wgt        ! weight of event
+    integer, intent(in), optional :: iFE     ! firstFvent
+
+    character(*), parameter :: f1 = '("# event ",I9," out",I4," weight",E14.6)'
+    character(*), parameter :: f0 = '("# event ",I9," out",I4)'
+
+    this%nEvent = nEvent
+    this%iFE = -1
+    if (present(iFE)) this%iFE = iFE
+
+    if (present(wgt)) then
+       write(this%iFile,f1) this%nEvent, nParts, wgt
+    else
+       write(this%iFile,f0) this%nEvent, nParts
+    end if
+  end subroutine
+
+
+  !****************************************************************************
+  !****s* EventOutput/OscarExt_write_event_footer
+  ! NAME
+  ! subroutine OscarExt_write_event_footer(this)
+  ! PURPOSE
+  ! Write the footer that closes an OSCAR 2013 event.
+  !****************************************************************************
+  subroutine OscarExt_write_event_footer(this)
+    use inputGeneral, only: eventType
+    use eventtypes, only: heavyIon, hadron, LoPion, HiPion
+    use initHeavyIon, only: b_HI => b
+    use initHadron, only: b_had => b
+    use initPion, only: getImpact_Lo => getImpact
+    use initHiPion, only: getImpact_Hi => getImpact
+
+    class(OscarExtOutputFile), intent(in) :: this
+
+    character(*), parameter :: f1 = '("# event ",I9," end 0 impact",E14.6)'
+    character(*), parameter :: f0 = '("# event ",I9," end 0")'
+
+    select case (eventType)
+    case (heavyIon)
+       write(this%iFile,f1) this%nEvent, b_Hi
+    case (hadron)
+       write(this%iFile,f1) this%nEvent, b_had
+    case (LoPion)
+       if (this%iFE>0) then
+          write(this%iFile,f1) this%nEvent, getImpact_Lo(this%iFE)
+       else
+          write(this%iFile,f0) this%nEvent
+       end if
+    case (HiPion)
+       if (this%iFE>0) then
+          write(this%iFile,f1) this%nEvent, getImpact_Hi(this%iFE)
+       else
+          write(this%iFile,f0) this%nEvent
+       end if
+    case default
+       write(this%iFile,f0) this%nEvent
+    end select
+
+  end subroutine
+
+
+  !****************************************************************************
+  !****s* EventOutput/OscarExt_write_particle
+  ! NAME
+  ! subroutine OscarExt_write_particle(iFile, part)
+  ! PURPOSE
+  ! Write a single particle in OSCAR 2013 extended format.
+  !****************************************************************************
+  subroutine OscarExt_write_particle(this, part)
+    use particleDefinition
+    use ID_translation, only: KFfromBUU
+    use history, only: history_getParents,history_getGeneration
+
+    class(OscarExtOutputFile), intent(in) :: this
+    type(particle), intent(in) :: part
+
+    character(len=30), parameter :: f = '(9ES17.9,2I9,2ES17.9,4I9)'
+    integer :: PDGcode, generation, k
+    integer, dimension(1:3) :: parents
+
+    PDGcode = KFfromBUU(part)
+    parents = history_getParents(part%history)
+    generation=history_getGeneration(part%history)
+    do k=1,2
+       if (parents(k)>200) parents(k)=200-parents(k)
+    end do
+    write(this%iFile,f) -99.9, part%position(1:3), &
+         sqrts(part), part%momentum(0:3), PDGcode, part%number, &
+         part%mass, part%lastCollisionTime, &
+         parents(1:3), generation
 
   end subroutine
 
@@ -595,16 +828,17 @@ contains
   !****************************************************************************
   !****s* EventOutput/Shanghai_write_event_header
   ! NAME
-  ! subroutine Shanghai_write_event_header(this, nParts, nEvent, wgt)
+  ! subroutine Shanghai_write_event_header(this, nParts, nEvent, wgt, iFE)
   ! PURPOSE
   ! Write the header for an event in Shanghai2014 format,
   ! including the number of particles and the event weight.
   !****************************************************************************
-  subroutine Shanghai_write_event_header(this, nParts, nEvent, wgt)
+  subroutine Shanghai_write_event_header(this, nParts, nEvent, wgt, iFE)
     class(ShanghaiOutputFile) :: this
     integer, intent(in) :: nParts            ! number of particles
     integer, intent(in) :: nEvent            ! number of current event
     real, intent(in), optional :: wgt        ! weight of event
+    integer, intent(in), optional :: iFE     ! firstFvent
 
     character(len=20) :: f
 
@@ -634,7 +868,7 @@ contains
   !****************************************************************************
   !****s* EventOutput/Shanghai_write_particle
   ! NAME
-  ! subroutine Shanghai_write_particle (iFile, part)
+  ! subroutine Shanghai_write_particle(iFile, part)
   ! PURPOSE
   ! Write a single particle in Shanghai2014 format.
   !****************************************************************************
@@ -712,16 +946,17 @@ contains
   !****************************************************************************
   !****s* EventOutput/Root_write_event_header
   ! NAME
-  ! subroutine Root_write_event_header(this, nParts, nEvent, wgt)
+  ! subroutine Root_write_event_header(this, nParts, nEvent, wgt, iFE)
   ! PURPOSE
   ! Write the header for an event in Root format,
   ! including the number of particles and the event weight.
   !****************************************************************************
-  subroutine Root_write_event_header(this, nParts, nEvent, wgt)
+  subroutine Root_write_event_header(this, nParts, nEvent, wgt, iFE)
     class(RootOutputFile) :: this
     integer, intent(in) :: nParts            ! number of particles
     integer, intent(in) :: nEvent            ! number of current event
     real, intent(in), optional :: wgt        ! weight of event
+    integer, intent(in), optional :: iFE     ! firstFvent
 
     this%weight = 1.0
     if (present(wgt)) this%weight=wgt
@@ -747,7 +982,7 @@ contains
   !****************************************************************************
   !****s* EventOutput/Root_write_particle
   ! NAME
-  ! subroutine Root_write_particle (iFile, part)
+  ! subroutine Root_write_particle(iFile, part)
   ! PURPOSE
   ! Write a single particle in Root format.
   !****************************************************************************
@@ -841,7 +1076,6 @@ contains
     case (neutrino)
       if (.not. present(iFE)) return
       if (NeutrinoProdInfo_Get(iFE,evtType,Weight,momLepIn,momLepOut,momBos,momNuc,chrg_nuc)) then
-         call rootaddint(numEnsembles, "numEnsembles")
          call rootaddint(num_runs_SameEnergy, "numRuns")
          call rootaddint(targetNuc%mass, "nucleus_A")
          call rootaddint(targetNuc%charge, "nucleus_Z")
@@ -861,6 +1095,7 @@ contains
          call rootadddouble(momNuc(2), "nuc_Py")
          call rootadddouble(momNuc(3), "nuc_Pz")
          call rootaddint(chrg_nuc, "nuc_charge")
+         
       end if
     case (hiLepton)
        if (.not. present(iFE)) return
@@ -1057,7 +1292,7 @@ contains
        pNode => ValueList(iiFE)%first
        iFE = pNode%V%firstEvent
        iEvent = (current_run_number-1)*size(ValueList) + iiFE
-       call this%write_event_header(NUP, iEvent, pNode%V%perweight)
+       call this%write_event_header(NUP, iEvent, pNode%V%perweight, iFE)
 
        do
           if (.not. associated(pNode)) exit
